@@ -68,6 +68,36 @@ function getIcon($t) {
     return $map[$t] ?? '❓';
 }
 
+// Mentor-Felder für bestehende Spieler ergänzen (Migration)
+function ensureMentorFields(&$players) {
+    $updated = false;
+    foreach($players as &$p) {
+        if(!isset($p['is_mentor'])) {
+            $p['is_mentor'] = false;
+            $updated = true;
+        }
+        if(!isset($p['mentor_id'])) {
+            $p['mentor_id'] = null;
+            $updated = true;
+        }
+    }
+    if($updated) {
+        saveJson(FILE_PLAYERS, $players);
+    }
+}
+
+// Mentor-Badge für Spieler-Anzeige
+function getMentorBadge($player, $mentorName = null) {
+    $badges = '';
+    if($player['is_mentor'] ?? false) {
+        $badges .= ' <span class="badge bg-warning text-dark" title="Mentor">👨‍🏫</span>';
+    }
+    if($mentorName) {
+        $badges .= ' <small class="text-success" title="Schüler von ' . $mentorName . '">👤→' . $mentorName . '</small>';
+    }
+    return $badges;
+}
+
 // --- LOGIK & ROUTING ---
 $page = $_GET['p'] ?? 'dashboard';
 $act = $_GET['act'] ?? '';
@@ -86,8 +116,8 @@ if (!$isInstalled) {
             if (!is_dir(DATA_DIR)) mkdir(DATA_DIR, 0755, true);
             saveJson(FILE_USERS, [['id'=>1, 'username'=>$adminUser, 'password'=>$adminPass, 'role'=>'Admin']]);
             saveJson(FILE_PLAYERS, [
-                ['id'=>'101', 'name'=>'Donatello', 'rank'=>'R4', 'squad'=>'Mischtrupp', 'status'=>'Active'],
-                ['id'=>'102', 'name'=>'Leonardo', 'rank'=>'R5', 'squad'=>'Panzer', 'status'=>'Active']
+                ['id'=>'101', 'name'=>'Donatello', 'rank'=>'R4', 'squad'=>'Mischtrupp', 'status'=>'Active', 'is_mentor'=>false, 'mentor_id'=>null],
+                ['id'=>'102', 'name'=>'Leonardo', 'rank'=>'R5', 'squad'=>'Panzer', 'status'=>'Active', 'is_mentor'=>false, 'mentor_id'=>null]
             ]);
             saveJson(FILE_LOGS, []);
             $_SESSION['user'] = ['username'=>$adminUser, 'role'=>'Admin'];
@@ -165,12 +195,34 @@ if ($isInstalled) {
         }
         if ($act === 'add_player' && isAdmin()) {
             $pl = loadJson(FILE_PLAYERS);
-            $pl[] = ['id'=>uniqid(), 'name'=>$_POST['p_name'], 'rank'=>$_POST['p_rank'], 'squad'=>$_POST['p_squad'], 'status'=>'Active'];
+            $pl[] = ['id'=>uniqid(), 'name'=>$_POST['p_name'], 'rank'=>$_POST['p_rank'], 'squad'=>$_POST['p_squad'], 'status'=>'Active', 'is_mentor'=>false, 'mentor_id'=>null];
             saveJson(FILE_PLAYERS, $pl);
         }
         if ($act === 'del_player' && isAdmin()) {
             $pl = array_values(array_filter(loadJson(FILE_PLAYERS), function($p){ return $p['id'] !== $_POST['target']; }));
             saveJson(FILE_PLAYERS, $pl);
+        }
+        if ($act === 'update_mentor_status' && isAdmin()) {
+            $pl = loadJson(FILE_PLAYERS);
+            foreach($pl as &$p) {
+                if($p['id'] === $_POST['player_id']) {
+                    $p['is_mentor'] = isset($_POST['is_mentor']);
+                    break;
+                }
+            }
+            saveJson(FILE_PLAYERS, $pl);
+            $msg = "Mentor-Status aktualisiert!";
+        }
+        if ($act === 'assign_mentor' && isAdmin()) {
+            $pl = loadJson(FILE_PLAYERS);
+            foreach($pl as &$p) {
+                if($p['id'] === $_POST['student_id']) {
+                    $p['mentor_id'] = $_POST['mentor_id'] === '' ? null : $_POST['mentor_id'];
+                    break;
+                }
+            }
+            saveJson(FILE_PLAYERS, $pl);
+            $msg = "Mentor zugewiesen!";
         }
     }
     
@@ -268,8 +320,23 @@ if ($isInstalled) {
         </div>
     </div>
 
-    <?php elseif($page === 'dashboard'): 
+    <?php elseif($page === 'dashboard'):
         $pl = loadJson(FILE_PLAYERS);
+        ensureMentorFields($pl); // Migration für Mentor-Felder
+
+        // Mentor-Namen vorab ermitteln für schnelleren Zugriff
+        $mentorNames = [];
+        foreach($pl as $p) {
+            if($p['mentor_id']) {
+                foreach($pl as $m) {
+                    if($m['id'] === $p['mentor_id']) {
+                        $mentorNames[$p['id']] = $m['name'];
+                        break;
+                    }
+                }
+            }
+        }
+
         usort($pl, function($a, $b) { return strcmp($b['rank'], $a['rank']) ?: strcmp($a['name'], $b['name']); });
     ?>
     <form method="POST" action="?p=dashboard&act=save_stats">
@@ -286,9 +353,16 @@ if ($isInstalled) {
             <div class="tab-pane fade show active" id="t1">
                 <div class="table-responsive"><table class="table table-dark table-sm align-middle">
                     <thead><tr><th>Name</th><th>Gesamtstärke (Mio)</th><th>Squad 1 (Mio)</th></tr></thead><tbody>
-                    <?php foreach($pl as $p): ?><tr><td><span class="badge bg-secondary"><?= $p['rank']?></span> <?= $p['name'] ?> <small><?= getIcon($p['squad'])?></small></td>
-                    <td><input type="number" step="0.01" name="pow_<?= $p['id'] ?>" class="form-control form-control-sm input-mini" placeholder="z.B. 41,3"></td>
-                    <td><input type="number" step="0.01" name="sq1_<?= $p['id'] ?>" class="form-control form-control-sm input-mini" placeholder="z.B. 8,5"></td></tr><?php endforeach; ?>
+                    <?php foreach($pl as $p): ?><tr>
+                        <td>
+                            <span class="badge bg-secondary"><?= $p['rank']?></span>
+                            <?= $p['name'] ?>
+                            <small><?= getIcon($p['squad'])?></small>
+                            <?= getMentorBadge($p, $mentorNames[$p['id']] ?? null) ?>
+                        </td>
+                        <td><input type="number" step="0.01" name="pow_<?= $p['id'] ?>" class="form-control form-control-sm input-mini" placeholder="z.B. 41,3"></td>
+                        <td><input type="number" step="0.01" name="sq1_<?= $p['id'] ?>" class="form-control form-control-sm input-mini" placeholder="z.B. 8,5"></td>
+                    </tr><?php endforeach; ?>
                 </tbody></table></div>
             </div>
             <div class="tab-pane fade" id="t2">
@@ -297,7 +371,11 @@ if ($isInstalled) {
                 </div>
                 <div class="table-responsive"><table class="table table-dark table-sm align-middle">
                     <thead><tr><th>Name</th><th>Mo</th><th>Di</th><th>Mi</th><th>Do</th><th>Fr</th><th>Sa</th><th>Tech</th></tr></thead><tbody>
-                    <?php foreach($pl as $p): ?><tr><td><?= $p['name'] ?></td>
+                    <?php foreach($pl as $p): ?><tr>
+                        <td>
+                            <?= $p['name'] ?>
+                            <?= getMentorBadge($p, $mentorNames[$p['id']] ?? null) ?>
+                        </td>
                     <td><input type="number" name="vs_mo_<?= $p['id'] ?>" class="form-control form-control-sm" style="width:70px" placeholder="0"></td>
                     <td><input type="number" name="vs_di_<?= $p['id'] ?>" class="form-control form-control-sm" style="width:70px" placeholder="0"></td>
                     <td><input type="number" name="vs_mi_<?= $p['id'] ?>" class="form-control form-control-sm" style="width:70px" placeholder="0"></td>
@@ -308,9 +386,13 @@ if ($isInstalled) {
                 </tbody></table></div>
             </div>
             <div class="tab-pane fade" id="t3">
-                <div class="row g-2"><?php foreach($pl as $p): ?><div class="col-6 col-md-3"><div class="card p-2"><div class="fw-bold"><?= $p['name'] ?></div>
-                <div class="form-check"><input class="form-check-input" type="checkbox" name="eb_<?= $p['id'] ?>"><label class="form-check-label">🧟 Buster</label></div>
-                <div class="form-check"><input class="form-check-input" type="checkbox" name="cap_<?= $p['id'] ?>"><label class="form-check-label">🏛️ Kapitol</label></div>
+                <div class="row g-2"><?php foreach($pl as $p): ?><div class="col-6 col-md-3"><div class="card p-2">
+                    <div class="fw-bold">
+                        <?= $p['name'] ?>
+                        <?= getMentorBadge($p, $mentorNames[$p['id']] ?? null) ?>
+                    </div>
+                    <div class="form-check"><input class="form-check-input" type="checkbox" name="eb_<?= $p['id'] ?>"><label class="form-check-label">🧟 Buster</label></div>
+                    <div class="form-check"><input class="form-check-input" type="checkbox" name="cap_<?= $p['id'] ?>"><label class="form-check-label">🏛️ Kapitol</label></div>
                 </div></div><?php endforeach; ?></div>
             </div>
         </div>
@@ -319,14 +401,42 @@ if ($isInstalled) {
 
     <?php elseif($page === 'report'):
         $logs = loadJson(FILE_LOGS);
+        $pl = loadJson(FILE_PLAYERS);
+        ensureMentorFields($pl); // Migration für Mentor-Felder
+
+        // Erstelle Player-Lookup für Mentor-Info
+        $playerLookup = [];
+        foreach($pl as $p) {
+            $playerLookup[$p['name']] = $p;
+        }
+
         $currentWeek = getVSWeek();
-        $stats = []; // Array: [Name => ['vs'=>sum, 'pow'=>last_val, 'sq1'=>last_val, 'ts_pow'=>timestamp]]
+        $stats = []; // Array: [Name => ['vs'=>sum, 'pow'=>last_val, 'sq1'=>last_val, 'ts_pow'=>timestamp, 'is_mentor'=>bool, 'mentor_name'=>string]]
 
         foreach($logs as $l) {
             $logWeek = getVSWeek($l['ts']);
             if($logWeek == $currentWeek) {
                 $n = $l['p_name'];
-                if(!isset($stats[$n])) $stats[$n] = ['vs'=>0, 'pow'=>0, 'sq1'=>0, 'ts_pow'=>''];
+                if(!isset($stats[$n])) {
+                    $player = $playerLookup[$n] ?? null;
+                    $mentorName = '';
+                    if($player && $player['mentor_id']) {
+                        foreach($pl as $m) {
+                            if($m['id'] === $player['mentor_id']) {
+                                $mentorName = $m['name'];
+                                break;
+                            }
+                        }
+                    }
+                    $stats[$n] = [
+                        'vs'=>0,
+                        'pow'=>0,
+                        'sq1'=>0,
+                        'ts_pow'=>'',
+                        'is_mentor'=>$player['is_mentor'] ?? false,
+                        'mentor_name'=>$mentorName
+                    ];
+                }
 
                 // VS summieren (alle 6 Tagespunkte)
                 $vs_total = ($l['vs_mo']??0) + ($l['vs_di']??0) + ($l['vs_mi']??0) +
@@ -364,6 +474,7 @@ if ($isInstalled) {
                 <tr>
                     <th>#</th>
                     <th>Name</th>
+                    <th>Mentor-Status</th>
                     <th class="text-end">Gesamtstärke</th>
                     <th class="text-end">Squad 1</th>
                     <th class="text-end text-success">VS Gesamt</th>
@@ -373,7 +484,19 @@ if ($isInstalled) {
             <?php $i=1; foreach($stats as $n=>$data): ?>
                 <tr>
                     <td><?= $i++ ?></td>
-                    <td><?= $n ?></td>
+                    <td>
+                        <?= $n ?>
+                        <?php if($data['is_mentor']): ?><span class="badge bg-warning text-dark ms-1" title="Mentor">👨‍🏫</span><?php endif; ?>
+                    </td>
+                    <td>
+                        <?php if($data['mentor_name']): ?>
+                            <small class="text-success">👤 Schüler von <strong><?= $data['mentor_name'] ?></strong></small>
+                        <?php elseif($data['is_mentor']): ?>
+                            <small class="text-warning">👨‍🏫 Ist Mentor</small>
+                        <?php else: ?>
+                            <small class="text-muted">-</small>
+                        <?php endif; ?>
+                    </td>
                     <td class="text-end"><?= number_format($data['pow'], 2, ',', '.') ?> Mio</td>
                     <td class="text-end"><?= number_format($data['sq1'], 2, ',', '.') ?> Mio</td>
                     <td class="text-end text-success fw-bold"><?= number_format($data['vs'], 0, ',', '.') ?></td>
@@ -385,7 +508,11 @@ if ($isInstalled) {
     
     <script>new Chart(document.getElementById('vsChart'),{type:'bar',data:{labels:<?=json_encode($topN)?>,datasets:[{label:'Punkte',data:<?=json_encode($topV)?>,backgroundColor:'#00ff41'}]},options:{plugins:{legend:{display:false}},scales:{x:{ticks:{color:'#fff'}},y:{ticks:{color:'#fff'}}}}});</script>
 
-    <?php elseif($page === 'settings' && isAdmin()): $us=loadJson(FILE_USERS); $pl=loadJson(FILE_PLAYERS); ?>
+    <?php elseif($page === 'settings' && isAdmin()):
+        $us=loadJson(FILE_USERS);
+        $pl=loadJson(FILE_PLAYERS);
+        ensureMentorFields($pl); // Migration für Mentor-Felder
+    ?>
     <h3>⚙️ Einstellungen</h3>
     <div class="card p-3 mb-4"><h5>Benutzerverwaltung</h5>
         <table class="table table-dark table-sm"><thead><tr><th>Benutzer</th><th>Rolle</th><th>Löschen</th></tr></thead><tbody>
@@ -397,11 +524,51 @@ if ($isInstalled) {
         <div class="col-2"><select name="new_role" class="form-select form-select-sm"><option>Officer</option><option>Admin</option></select></div>
         <div class="col-1"><button class="btn btn-success btn-sm w-100">+</button></div></form>
     </div>
-    <div class="card p-3"><h5>Mitgliederverwaltung</h5>
-        <div style="max-height:300px;overflow-y:auto;"><table class="table table-dark table-sm"><thead><tr><th>Name</th><th>Rang</th><th>Squad</th><th>Löschen</th></tr></thead><tbody>
-        <?php foreach($pl as $p): ?><tr><td><?= $p['name'] ?></td><td><?= $p['rank'] ?></td><td><?= getIcon($p['squad']) ?> <?= $p['squad'] ?></td><td>
-        <form method="POST" action="?p=settings&act=del_player" class="d-inline"><input type="hidden" name="target" value="<?= $p['id'] ?>"><button class="btn btn-outline-danger btn-sm p-0 px-2">X</button></form>
-        </td></tr><?php endforeach; ?></tbody></table></div>
+    <div class="card p-3 mb-4"><h5>Mitgliederverwaltung</h5>
+        <div style="max-height:400px;overflow-y:auto;"><table class="table table-dark table-sm"><thead><tr><th>Name</th><th>Rang</th><th>Squad</th><th>Ist Mentor</th><th>Mentor von</th><th>Löschen</th></tr></thead><tbody>
+        <?php foreach($pl as $p):
+            $isMentor = $p['is_mentor'] ?? false;
+            $mentorId = $p['mentor_id'] ?? null;
+            $mentorName = '';
+            if($mentorId) {
+                foreach($pl as $m) {
+                    if($m['id'] === $mentorId) {
+                        $mentorName = $m['name'];
+                        break;
+                    }
+                }
+            }
+        ?>
+        <tr>
+            <td><?= $p['name'] ?></td>
+            <td><?= $p['rank'] ?></td>
+            <td><?= getIcon($p['squad']) ?> <?= $p['squad'] ?></td>
+            <td>
+                <form method="POST" action="?p=settings&act=update_mentor_status" class="d-inline">
+                    <input type="hidden" name="player_id" value="<?= $p['id'] ?>">
+                    <input type="checkbox" name="is_mentor" <?= $isMentor ? 'checked' : '' ?> onchange="this.form.submit()" class="form-check-input">
+                </form>
+                <?php if($isMentor): ?><span class="badge bg-warning text-dark">👨‍🏫</span><?php endif; ?>
+            </td>
+            <td>
+                <form method="POST" action="?p=settings&act=assign_mentor" class="d-inline">
+                    <input type="hidden" name="student_id" value="<?= $p['id'] ?>">
+                    <select name="mentor_id" class="form-select form-select-sm" style="width:auto;display:inline-block;" onchange="this.form.submit()">
+                        <option value="">Kein Mentor</option>
+                        <?php foreach($pl as $mentor):
+                            if($mentor['is_mentor'] && $mentor['id'] !== $p['id']):
+                        ?>
+                            <option value="<?= $mentor['id'] ?>" <?= $mentorId === $mentor['id'] ? 'selected' : '' ?>><?= $mentor['name'] ?></option>
+                        <?php endif; endforeach; ?>
+                    </select>
+                </form>
+                <?php if($mentorName): ?><br><small class="text-success">👨‍🏫 <?= $mentorName ?></small><?php endif; ?>
+            </td>
+            <td>
+                <form method="POST" action="?p=settings&act=del_player" class="d-inline"><input type="hidden" name="target" value="<?= $p['id'] ?>"><button class="btn btn-outline-danger btn-sm p-0 px-2">X</button></form>
+            </td>
+        </tr>
+        <?php endforeach; ?></tbody></table></div>
         <form method="POST" action="?p=settings&act=add_player" class="row g-2 mt-2"><div class="col-4"><input type="text" name="p_name" class="form-control form-control-sm" placeholder="Name"></div>
         <div class="col-2"><select name="p_rank" class="form-select form-select-sm"><option>R4</option><option>R1</option><option>R2</option><option>R3</option><option>R5</option></select></div>
         <div class="col-4"><select name="p_squad" class="form-select form-select-sm"><option value="Panzer">Panzer</option><option value="Flugzeug">Flugzeug</option><option value="Raketenwerfer">Raketenwerfer</option><option value="Mischtrupp">Mischtrupp</option><option value="Unbekannt">Unbekannt</option></select></div>
