@@ -45,10 +45,27 @@ function toFloat($val) {
     return floatval($val);
 }
 
+// VS-Wochen-Berechnung (Montag-Samstag, Sonntag gehört zur nächsten Woche)
+function getVSWeek($timestamp = null) {
+    $ts = $timestamp ? strtotime($timestamp) : time();
+    $dayOfWeek = date('N', $ts); // 1=Montag, 7=Sonntag
+
+    // Wenn Sonntag, verschiebe auf nächsten Montag für Wochenberechnung
+    if ($dayOfWeek == 7) {
+        $ts = strtotime('+1 day', $ts);
+    }
+
+    // Berechne Montag der aktuellen Woche
+    $monday = strtotime('monday this week', $ts);
+
+    // Erstelle eindeutige Wochen-ID: Jahr + Wochennummer
+    return date('Y', $monday) . '-W' . date('W', $monday);
+}
+
 // Icon Zuweisung
-function getIcon($t) { 
+function getIcon($t) {
     $map = ['Panzer'=>'🛡️','Flugzeug'=>'✈️','Raketenwerfer'=>'🚀','Mischtrupp'=>'⚔️','Unbekannt'=>'❓'];
-    return $map[$t] ?? '❓'; 
+    return $map[$t] ?? '❓';
 }
 
 // --- LOGIK & ROUTING ---
@@ -110,17 +127,23 @@ if ($isInstalled) {
                 // Speichern wenn Power gefüllt oder Events
                 if ($pow_raw !== '' || $eb || $cap) {
                     $logs[] = [
-                        'id' => uniqid(), 
-                        'ts' => $ts, 
-                        'p_id' => $pid, 
+                        'id' => uniqid(),
+                        'ts' => $ts,
+                        'p_id' => $pid,
                         'p_name' => $p['name'],
                         'rec' => $_SESSION['user']['username'],
                         // Hier nutzen wir die neue toFloat Funktion
-                        'pow' => toFloat($pow_raw), 
+                        'pow' => toFloat($pow_raw),
                         'sq1' => toFloat($sq1_raw),
-                        'vs' => (int)($_POST["vs_$pid"]??0), 
+                        // Tägliche VS-Punkte (Montag bis Samstag)
+                        'vs_mo' => (int)($_POST["vs_mo_$pid"]??0),
+                        'vs_di' => (int)($_POST["vs_di_$pid"]??0),
+                        'vs_mi' => (int)($_POST["vs_mi_$pid"]??0),
+                        'vs_do' => (int)($_POST["vs_do_$pid"]??0),
+                        'vs_fr' => (int)($_POST["vs_fr_$pid"]??0),
+                        'vs_sa' => (int)($_POST["vs_sa_$pid"]??0),
                         'tech' => (int)($_POST["tech_$pid"]??0),
-                        'eb' => $eb, 
+                        'eb' => $eb,
                         'cap' => $cap
                     ];
                     $count++;
@@ -155,13 +178,20 @@ if ($isInstalled) {
     if ($page === 'export' && isLogged()) {
         $logs = loadJson(FILE_LOGS);
         header('Content-Type: text/csv'); header('Content-Disposition: attachment; filename="tmnt_export.csv"');
-        $out = fopen('php://output', 'w'); 
-        fputcsv($out, ['Zeitstempel','Spieler','Gesamtstaerke','Squad 1','VS Punkte','Forschung','Enemy Buster','Kapitol','Erfasser']);
+        $out = fopen('php://output', 'w');
+        fputcsv($out, ['Zeitstempel','Spieler','Gesamtstaerke','Squad 1','VS_Montag','VS_Dienstag','VS_Mittwoch','VS_Donnerstag','VS_Freitag','VS_Samstag','VS_Gesamt','Forschung','Enemy Buster','Kapitol','Erfasser']);
         // Beim Export Komma statt Punkt für Excel-Kompatibilität in DE
         foreach($logs as $l) {
             $pow_ex = str_replace('.', ',', $l['pow']);
             $sq1_ex = str_replace('.', ',', $l['sq1']);
-            fputcsv($out, [$l['ts'],$l['p_name'],$pow_ex,$sq1_ex,$l['vs'],$l['tech'],$l['eb']?'1':'0',$l['cap']?'1':'0',$l['rec']]);
+            $vs_mo = $l['vs_mo']??0;
+            $vs_di = $l['vs_di']??0;
+            $vs_mi = $l['vs_mi']??0;
+            $vs_do = $l['vs_do']??0;
+            $vs_fr = $l['vs_fr']??0;
+            $vs_sa = $l['vs_sa']??0;
+            $vs_gesamt = $vs_mo + $vs_di + $vs_mi + $vs_do + $vs_fr + $vs_sa;
+            fputcsv($out, [$l['ts'],$l['p_name'],$pow_ex,$sq1_ex,$vs_mo,$vs_di,$vs_mi,$vs_do,$vs_fr,$vs_sa,$vs_gesamt,$l['tech'],$l['eb']?'1':'0',$l['cap']?'1':'0',$l['rec']]);
         }
         fclose($out); exit;
     }
@@ -262,11 +292,19 @@ if ($isInstalled) {
                 </tbody></table></div>
             </div>
             <div class="tab-pane fade" id="t2">
+                <div class="alert alert-info">
+                    <strong>📅 VS-Woche:</strong> Montag bis Samstag | Heute: <?= date('l, d.m.Y') ?>
+                </div>
                 <div class="table-responsive"><table class="table table-dark table-sm align-middle">
-                    <thead><tr><th>Name</th><th>VS Punkte</th><th>Forschung</th></tr></thead><tbody>
+                    <thead><tr><th>Name</th><th>Mo</th><th>Di</th><th>Mi</th><th>Do</th><th>Fr</th><th>Sa</th><th>Tech</th></tr></thead><tbody>
                     <?php foreach($pl as $p): ?><tr><td><?= $p['name'] ?></td>
-                    <td><input type="number" name="vs_<?= $p['id'] ?>" class="form-control form-control-sm input-mini"></td>
-                    <td><input type="number" name="tech_<?= $p['id'] ?>" class="form-control form-control-sm input-mini"></td></tr><?php endforeach; ?>
+                    <td><input type="number" name="vs_mo_<?= $p['id'] ?>" class="form-control form-control-sm" style="width:70px" placeholder="0"></td>
+                    <td><input type="number" name="vs_di_<?= $p['id'] ?>" class="form-control form-control-sm" style="width:70px" placeholder="0"></td>
+                    <td><input type="number" name="vs_mi_<?= $p['id'] ?>" class="form-control form-control-sm" style="width:70px" placeholder="0"></td>
+                    <td><input type="number" name="vs_do_<?= $p['id'] ?>" class="form-control form-control-sm" style="width:70px" placeholder="0"></td>
+                    <td><input type="number" name="vs_fr_<?= $p['id'] ?>" class="form-control form-control-sm" style="width:70px" placeholder="0"></td>
+                    <td><input type="number" name="vs_sa_<?= $p['id'] ?>" class="form-control form-control-sm" style="width:70px" placeholder="0"></td>
+                    <td><input type="number" name="tech_<?= $p['id'] ?>" class="form-control form-control-sm" style="width:70px" placeholder="0"></td></tr><?php endforeach; ?>
                 </tbody></table></div>
             </div>
             <div class="tab-pane fade" id="t3">
@@ -279,33 +317,44 @@ if ($isInstalled) {
         <div class="sticky-save"><button class="btn btn-success w-100 fw-bold">💾 SPEICHERN</button></div>
     </form>
 
-    <?php elseif($page === 'report'): 
-        $logs = loadJson(FILE_LOGS); $cw = date('W'); 
+    <?php elseif($page === 'report'):
+        $logs = loadJson(FILE_LOGS);
+        $currentWeek = getVSWeek();
         $stats = []; // Array: [Name => ['vs'=>sum, 'pow'=>last_val, 'sq1'=>last_val, 'ts_pow'=>timestamp]]
-        
-        foreach($logs as $l) { 
-            if(date('W', strtotime($l['ts'])) == $cw) { 
-                $n = $l['p_name']; 
+
+        foreach($logs as $l) {
+            $logWeek = getVSWeek($l['ts']);
+            if($logWeek == $currentWeek) {
+                $n = $l['p_name'];
                 if(!isset($stats[$n])) $stats[$n] = ['vs'=>0, 'pow'=>0, 'sq1'=>0, 'ts_pow'=>''];
-                
-                // VS summieren
-                $stats[$n]['vs'] += $l['vs'];
-                
+
+                // VS summieren (alle 6 Tagespunkte)
+                $vs_total = ($l['vs_mo']??0) + ($l['vs_di']??0) + ($l['vs_mi']??0) +
+                           ($l['vs_do']??0) + ($l['vs_fr']??0) + ($l['vs_sa']??0);
+                $stats[$n]['vs'] += $vs_total;
+
                 // Power & Squad: Nur den aktuellsten Wert der Woche nehmen
                 if($l['pow'] > 0 && $l['ts'] >= $stats[$n]['ts_pow']) {
                     $stats[$n]['pow'] = $l['pow'];
                     $stats[$n]['sq1'] = $l['sq1'];
                     $stats[$n]['ts_pow'] = $l['ts'];
                 }
-            } 
+            }
         }
         // Sortieren nach VS (Standard)
         uasort($stats, function($a, $b) { return $b['vs'] <=> $a['vs']; });
-        
-        $topN = array_slice(array_keys($stats),0,5); 
+
+        $topN = array_slice(array_keys($stats),0,5);
         $topV = array_slice(array_column($stats, 'vs'),0,5);
+
+        // Extrahiere Wochennummer für Anzeige
+        preg_match('/W(\d+)/', $currentWeek, $matches);
+        $displayWeek = $matches[1] ?? date('W');
     ?>
-    <div class="d-flex justify-content-between mb-3"><h3>Wochenbericht KW <?= $cw ?></h3><a href="?p=export" class="btn btn-outline-success btn-sm">CSV Export</a></div>
+    <div class="d-flex justify-content-between mb-3">
+        <h3>Wochenbericht KW <?= $displayWeek ?> (Mo-Sa)</h3>
+        <a href="?p=export" class="btn btn-outline-success btn-sm">CSV Export</a>
+    </div>
     
     <div class="card p-3 mb-3"><canvas id="vsChart" style="max-height:250px"></canvas></div>
     
